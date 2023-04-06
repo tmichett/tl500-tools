@@ -4,12 +4,39 @@
 # Lecture https://rht-labs.com/tech-exercise/#
 #
 
-#
-# Input
-#
-USERNAME=$1
-PASSWORD=$2
-TEAM_NAME=$3
+# Help function
+help() {
+  echo -e "Usage: $0 -u=<USERNAME> -p=<PASSWORD> -t=<TEAM_NAME>"
+  echo -e "Example: $0 -u=lab01 -p=lab01 -t=01team"
+  exit 1
+}
+
+# Parse and check input
+for i in "$@"; do
+  case $i in
+    -u=*)
+      USERNAME="${i#*=}"
+      shift
+      ;;
+    -p=*)
+      PASSWORD="${i#*=}"
+      shift
+      ;;
+    -t=*)
+      TEAM_NAME="${i#*=}"
+      shift
+      ;;
+    *)
+      help
+      ;;
+  esac
+done
+
+# Check vars
+if [ -z ${USERNAME} ] || [ -z ${PASSWORD} ] || [ -z ${TEAM_NAME} ]
+then
+  help
+fi
 
 #
 # Configuration
@@ -18,12 +45,21 @@ CLUSTER_DOMAIN=apps.ocp4.example.com
 GIT_SERVER=gitlab-ce.apps.ocp4.example.com
 OCP_CONSOLE=https://console-openshift-console.apps.ocp4.example.com
 
+#
+# Patches
+#
+ARGO_PATCH="--version 0.4.9"
+KEYCLOACK_PATCH="labs1.0.1"
+
 if [ "$1" == "--reset" ]
 then
   helm uninstall my tl500/todolist --namespace ${TEAM_NAME}-ci-cd
   helm uninstall argocd --namespace ${TEAM_NAME}-ci-cd
   helm uninstall uj --namespace ${TEAM_NAME}-ci-cd
   oc delete all --all -n ${TEAM_NAME}-ci-cd
+  oc delete all --all -n ${TEAM_NAME}-test
+  oc delete all --all -n ${TEAM_NAME}-stage
+  oc delete all --all -n ${TEAM_NAME}-dev
   exit 0
 fi
 
@@ -68,7 +104,7 @@ helm repo add tl500 https://rht-labs.com/todolist
 helm search repo todolist
 helm install my tl500/todolist --namespace ${TEAM_NAME}-ci-cd || true
 echo https://$(oc get route/my-todolist -n ${TEAM_NAME}-ci-cd --template='{{.spec.host}}')
-sleep 60
+sleep 180
 oc get pods -n ${TEAM_NAME}-ci-cd
 helm uninstall my --namespace ${TEAM_NAME}-ci-cd
 
@@ -123,7 +159,7 @@ EOF
 helm upgrade --install argocd \
   --namespace ${TEAM_NAME}-ci-cd \
   -f /projects/tech-exercise/argocd-values.yaml \
-  redhat-cop/gitops-operator
+  redhat-cop/gitops-operator ${ARGO_PATCH}
 
 sleep 60
 oc get pods -n ${TEAM_NAME}-ci-cd
@@ -249,4 +285,3 @@ read -p "Press [Enter] when done to continue..."
 
 echo "==> Log to ${OCP_CONSOLE} and verify that jenkins deploy has the new var BISCUITS."
 read -p "Press [Enter] when done to continue..."
-
