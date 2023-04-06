@@ -4,12 +4,39 @@
 # Lecture https://rht-labs.com/tech-exercise/#
 #
 
-#
-# Input
-#
-USERNAME=$1
-PASSWORD=$2
-TEAM_NAME=$3
+# Help function
+help() {
+  echo -e "Usage: $0 -u=<USERNAME> -p=<PASSWORD> -t=<TEAM_NAME>"
+  echo -e "Example: $0 -u=lab01 -p=lab01 -t=01team"
+  exit 1
+}
+
+# Parse and check input
+for i in "$@"; do
+  case $i in
+    -u=*)
+      USERNAME="${i#*=}"
+      shift
+      ;;
+    -p=*)
+      PASSWORD="${i#*=}"
+      shift
+      ;;
+    -t=*)
+      TEAM_NAME="${i#*=}"
+      shift
+      ;;
+    *)
+      help
+      ;;
+  esac
+done
+
+# Check vars
+if [ -z ${USERNAME} ] || [ -z ${PASSWORD} ] || [ -z ${TEAM_NAME} ]
+then
+  help
+fi
 
 #
 # Configuration
@@ -18,12 +45,21 @@ CLUSTER_DOMAIN=apps.ocp4.example.com
 GIT_SERVER=gitlab-ce.apps.ocp4.example.com
 OCP_CONSOLE=https://console-openshift-console.apps.ocp4.example.com
 
+#
+# Patches
+#
+ARGO_PATCH="--version 0.4.9"
+KEYCLOACK_PATCH="labs1.0.1"
+
 if [ "$1" == "--reset" ]
 then
   helm uninstall my tl500/todolist --namespace ${TEAM_NAME}-ci-cd
   helm uninstall argocd --namespace ${TEAM_NAME}-ci-cd
   helm uninstall uj --namespace ${TEAM_NAME}-ci-cd
   oc delete all --all -n ${TEAM_NAME}-ci-cd
+  oc delete all --all -n ${TEAM_NAME}-test
+  oc delete all --all -n ${TEAM_NAME}-stage
+  oc delete all --all -n ${TEAM_NAME}-dev
   exit 0
 fi
 
@@ -68,7 +104,7 @@ helm repo add tl500 https://rht-labs.com/todolist
 helm search repo todolist
 helm install my tl500/todolist --namespace ${TEAM_NAME}-ci-cd || true
 echo https://$(oc get route/my-todolist -n ${TEAM_NAME}-ci-cd --template='{{.spec.host}}')
-sleep 60
+sleep 180
 oc get pods -n ${TEAM_NAME}-ci-cd
 helm uninstall my --namespace ${TEAM_NAME}-ci-cd
 
@@ -123,7 +159,7 @@ EOF
 helm upgrade --install argocd \
   --namespace ${TEAM_NAME}-ci-cd \
   -f /projects/tech-exercise/argocd-values.yaml \
-  redhat-cop/gitops-operator
+  redhat-cop/gitops-operator ${ARGO_PATCH}
 
 sleep 60
 oc get pods -n ${TEAM_NAME}-ci-cd
@@ -264,6 +300,7 @@ echo "#################################################"
 echo "### Attack of the Pipelines -> Sealed Secrets ###"
 echo "#################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 cd /projects/tech-exercise
 git remote set-url origin https://${GIT_SERVER}/${TEAM_NAME}/tech-exercise.git
@@ -336,13 +373,14 @@ yq e '(.applications[] | (select(.name=="test-app-of-pb").enabled)) |=true' -i /
 yq e '(.applications[] | (select(.name=="staging-app-of-pb").enabled)) |=true' -i /projects/tech-exercise/values.yaml
 
 if [[ $(yq e '.applications[] | select(.name=="keycloak") | length' /projects/tech-exercise/pet-battle/test/values.yaml) < 1 ]]; then
-    yq e '.applications.keycloak = {"name": "keycloak","enabled": true,"source": "https://github.com/petbattle/pet-battle-infra","source_ref": "main","source_path": "keycloak","values": {"app_domain": "CLUSTER_DOMAIN"}}' -i /projects/tech-exercise/pet-battle/test/values.yaml
-    sed -i "s|CLUSTER_DOMAIN|$CLUSTER_DOMAIN|" /projects/tech-exercise/pet-battle/test/values.yaml
+    yq e '.applications.keycloak = {"name": "keycloak","enabled": true,"source": "https://github.com/petbattle/pet-battle-infra","source_ref": "BRANCH_ID","source_path": "keycloak","values": {"app_domain": "CLUSTER_DOMAIN"}}' -i /projects/tech-exercise/pet-battle/test/values.yaml
+    sed -i "s|CLUSTER_DOMAIN|${CLUSTER_DOMAIN}|" /projects/tech-exercise/pet-battle/test/values.yaml
+    sed -i "s|BRANCH_ID|${KEYCLOACK_PATCH}|" /projects/tech-exercise/pet-battle/test/values.yaml
 fi
 
 echo "See keycloak object"
 cat /projects/tech-exercise/pet-battle/test/values.yaml
-cat /projects/tech-exercise/pet-battle/test/values.yaml
+sleep 180
 
 cd /projects/tech-exercise
 git add .
@@ -492,6 +530,7 @@ git add .
 git commit -m  "ADD - tekton pipelines config"
 git push
 
+sleep 60
 echo "==> Log to ${ARGO_URL} and verify ubiquitous-jorney app has a tekton-pipeline resource"
 read -p "Press [Enter] when done to continue..." 
 
@@ -502,14 +541,14 @@ read -p "Press [Enter] when done to continue..."
 
 cd /projects/pet-battle-api
 mvn -ntp versions:set -DnewVersion=1.3.1
-sleep 30
+sleep 100
 
 cd /projects/pet-battle-api
 git add .
 git commit -m  "UPDATED - pet-battle-version to 1.3.1"
 git push 
 
-sleep 30
+sleep 60
 echo "==> Log to ${OCP_CONSOLE} Observe Pipeline running -> Pipelines -> Pipelines in your ${TEAM_NAME}-ci-cd project. Also, use the tkn command line to observe PipelineRun logs as well: 'tkn -n ${TEAM_NAME}-ci-cd pr logs -Lf'"
 read -p "Press [Enter] when done to continue..."
 
@@ -518,6 +557,7 @@ echo "##########################################################"
 echo "### The Revenge of the Automated Testing -> Sonarqube  ###"
 echo "##########################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 cd /projects/tech-exercise
 git remote set-url origin https://${GIT_SERVER}/${TEAM_NAME}/tech-exercise.git
@@ -856,6 +896,7 @@ echo "########################################################################"
 echo "### The Revenge of the Automated Testing -> Code Linting -> Jenkins  ###"
 echo "########################################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 echo "==> Perform step 4) Edit /projects/pet-battle/Jenkinsfile file to extend extend the stage{ "Build" } of the Jenkinsfile with the lint task. //Lint exercise here."
 read -p "Press [Enter] when done to continue..."
@@ -915,6 +956,7 @@ echo "#######################################################################"
 echo "### The Revenge of the Automated Testing -> Kube Linting -> Tekton  ###"
 echo "#######################################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 ### TODO: This must be documented on the lectures 
 cd /projects/tech-exercise
@@ -930,7 +972,7 @@ git add .
 git commit -m  " ADD - kube-linter task"
 git push
 
-echo "==> Perform step 2) Edit /projects/tech-exercise/tekton/templates/pipelines/maven-pipeline.yaml file to add kube-linter task."
+echo "==> Perform step 2) Edit /projects/tech-exercise/tekton/templates/pipelines/maven-pipeline.yaml file to add kube-linter task. Modify mvn step to run after kube-linter"
 read -p "Press [Enter] when done to continue..."
 
 cd /projects/tech-exercise
@@ -1161,6 +1203,7 @@ echo "##########################################################################
 echo "### The Revenge of the Automated Testing -> Image Security -> Jenkins  ###"
 echo "##########################################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 echo "==> Perform step 1) ROX_CREDS using /projects/pet-battle/Jenkinsfile"
 read -p "Press [Enter] when done to continue..."
@@ -1198,6 +1241,7 @@ echo "#########################################################################"
 echo "### The Revenge of the Automated Testing -> Image Security -> Tekton  ###"
 echo "#########################################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 cd /projects/tech-exercise
 cat <<'EOF' > tekton/templates/tasks/rox-image-scan.yaml
@@ -1251,7 +1295,7 @@ git add .
 git commit -m  "ADD - rox-image-scan-task"
 git push 
 
-echo "==> Perform step 3) Edit /projects/tech-exercise/tekton/templates/pipeline/maven-pipeline.yaml to add image-scan step."
+echo "==> Perform step 3) Edit /projects/tech-exercise/tekton/templates/pipeline/maven-pipeline.yaml to add image-scan step. Edit helm-package step to runafter image-scan"
 read -p "Press [Enter] when done to continue..."
 
 cd /projects/tech-exercise
@@ -1656,6 +1700,7 @@ echo "##################################################"
 echo "### Return of the Monitoring -> Create Alerts  ###"
 echo "##################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 cat << EOF >> /projects/pet-battle-api/chart/templates/prometheusrule.yaml
     - alert: PetBattleMongoDBDiskUsage
@@ -1712,6 +1757,7 @@ echo "##################################################"
 echo "### The Deployments Strike Back - Autoscaling  ###"
 echo "##################################################"
 echo
+oc login --server=https://api.${CLUSTER_DOMAIN##apps.}:6443 -u ${USERNAME} -p ${PASSWORD} >/dev/null 2>&1
 
 echo "==> Perform step 2) Edit /projects/tech-exercise/pet-battle/test/values.yaml and set pet-battle-api hpa to enabled:true"
 read -p "Press [Enter] when done to continue..."
@@ -1724,10 +1770,18 @@ git push
 echo "==> Log to ${ARGO_URL} and see the new HPA object created on test-pet-battle-api."
 read -p "Press [Enter] when done to continue..."
 
-echo "==> Hey load test running. Log to ${OCP_CONSOLE} see autoscaler kickin in and spinnin gup additional pods. Administrator -> Deployments (${TEAM_NAME}-test). Administrator -> Workloads -> HPA (${TEAM_NAME}-test). Developer -> Topology (${TEAM_NAME} test) "
+echo "==> K6 load test running... Log to ${OCP_CONSOLE} see autoscaler kicking in and spinnin up additional pods. Administrator -> Workloads -> HPA (${TEAM_NAME}-test). Developer -> Topology (${TEAM_NAME} test)"
 
 sleep 10
-hey -t 30 -c 10 -n 10000 -H "Content-Type: application/json" -m GET https://$(oc get route/pet-battle-api -n ${TEAM_NAME}-test --template='{{.spec.host}}')/cats 
+cat << EOF > /tmp/load.js
+import http from 'k6/http';
+import { sleep } from 'k6';
+export default function () {
+  http.get('https://$(oc get route/pet-battle-api -n ${TEAM_NAME}-test --template='{{.spec.host}}')/cats');
+}
+EOF
+
+k6 run --insecure-skip-tls-verify --vus 100 --duration 30s /tmp/load.js
 
 read -p "Press [Enter] when done to continue..."
 
